@@ -1,4 +1,5 @@
 import os
+import subprocess
 import time
 from copy import deepcopy
 
@@ -34,21 +35,7 @@ class TrueTypeToCFF(object):
         self.font = font
         self.options = TrueTypeToCFFOptions()
 
-    def run(self):
-
-        self.font.recalcTimestamp = self.options.recalc_timestamp
-
-        # Prepare the font for conversion
-        decomponentize(font=self.font)
-        if self.options.new_upem is not None:
-            scale_upem(self.font, new_upem=self.options.new_upem)
-        if self.options.remove_glyphs:
-            remove_unneeded_glyphs(self.font)
-
-        if self.options.charstrings_source == "qu2cu":
-            charstrings, glyphs_to_redraw = self.get_qu2cu_charstrings(font=self.font, tolerance=self.options.tolerance)
-        else:
-            charstrings, glyphs_to_redraw = self.get_t2_charstrings(font=self.font)
+    def run(self, charstrings: dict) -> TTFont:
 
         cff_font_info = self.get_cff_font_info()
         post_values = self.get_post_values()
@@ -68,44 +55,6 @@ class TrueTypeToCFF(object):
         fb.setupDummyDSIG()
         fb.setupMaxp()
         fb.setupPost(**post_values)
-
-        print(glyphs_to_redraw)
-
-        if len(glyphs_to_redraw) > 0:
-            temp_source_font: TTFont = deepcopy(self.font)
-            from fontTools.subset import Subsetter
-            subsetter = Subsetter()
-            subsetter.glyph_names_requested = glyphs_to_redraw
-            subsetter.options.notdef_glyph = True
-            subsetter.subset(temp_source_font)
-
-            generic_error_message(temp_source_font.getGlyphOrder())
-
-            temp_ttf2otf_converter = TrueTypeToCFF(temp_source_font)
-            temp_ttf2otf_converter.options.charstrings_source = "t2"
-            temp_cff_font = temp_ttf2otf_converter.run()
-
-            temp_otf2ttf_converter = CFFToTrueType(temp_cff_font)
-            temp_ttf_font = temp_otf2ttf_converter.run()
-            redrawn_charstrings, _ = self.get_qu2cu_charstrings(temp_ttf_font)
-
-            for k, v in redrawn_charstrings.items():
-                charstrings[k] = v
-
-            fb.setupCFF(
-                psName=self.font["name"].getDebugName(6),
-                charStringsDict=charstrings,
-                fontInfo=cff_font_info,
-                privateDict={},
-            )
-
-        if self.options.subroutinize:
-            # cffsubr doesn't work with woff/woff2 fonts, we need to temporary set flavor to None
-            flavor = fb.font.flavor
-            if flavor is not None:
-                fb.font.flavor = None
-            subroutinize(fb.font)
-            fb.font.flavor = flavor
 
         return fb.font
 
@@ -145,58 +94,67 @@ class TrueTypeToCFF(object):
         )
         return post_info
 
-    @staticmethod
-    def get_qu2cu_charstrings(font: TTFont, tolerance: float = 1.0) -> (dict, list):
-        charstrings = {}
-        glyph_set = font.getGlyphSet()
-        glyphs_to_redraw = []
 
-        for k, v in glyph_set.items():
-            # Correct contours direction and remove overlaps with pathops
-            pathops_path = pathops.Path()
-            pathops_pen = pathops_path.getPen(glyphSet=glyph_set)
-            try:
-                glyph_set[k].draw(pathops_pen)
-                pathops_path.simplify()
-            except TypeError as e:
-                generic_warning_message(f"{k}: {e}")
-                glyphs_to_redraw.append(k)
-                pass
+def get_qu2cu_charstrings(font: TTFont, tolerance: float = 1.0) -> (dict, list):
+    charstrings = {}
+    glyph_set = font.getGlyphSet()
+    glyphs_with_errors = []
 
-            t2_pen = T2CharStringPen(v.width, glyphSet=glyph_set)
-            qu2cu_pen = Qu2CuPen(t2_pen, max_err=tolerance, all_cubic=True, reverse_direction=True)
-            try:
-                pathops_path.draw(qu2cu_pen)
-            except NotImplementedError as e:
-                generic_warning_message(f"{k}: {e}")
-                qu2cu_pen.all_cubic = False
-                pathops_path.draw(qu2cu_pen)
-                glyphs_to_redraw.append(k)
+    for k, v in glyph_set.items():
+        # Correct contours direction and remove overlaps with pathops
+        pathops_path = pathops.Path()
+        pathops_pen = pathops_path.getPen(glyphSet=glyph_set)
+        t2_pen = T2CharStringPen(v.width, glyphSet=glyph_set)
+        qu2cu_pen = Qu2CuPen(t2_pen, max_err=tolerance, all_cubic=True, reverse_direction=False)
+        try:
+            glyph_set[k].draw(pathops_pen)
+            pathops_path.simplify()
+            pathops_path.draw(qu2cu_pen)
 
-            charstring = t2_pen.getCharString()
-            charstrings[k] = charstring
+        except TypeError as e:
+            # generic_warning_message(f"{k}: {e}")
+            glyphs_with_errors.append(k)
+            pass
 
-        return charstrings, glyphs_to_redraw
+        except NotImplementedError as e:
+            # generic_warning_message(f"{k}: {e}")
+            glyphs_with_errors.append(k)
+            qu2cu_pen.all_cubic = False
+            glyph_set[k].draw(qu2cu_pen)
 
-    @staticmethod
-    def get_t2_charstrings(font: TTFont) -> (dict, list):
-        """
-        Get CFF charstrings using T2CharStringPen
+        charstring = t2_pen.getCharString()
+        charstrings[k] = charstring
 
-        :return: CFF charstrings.
-        """
-        charstrings = {}
-        glyph_set = font.getGlyphSet()
+    return charstrings, glyphs_with_errors
 
-        for k, v in glyph_set.items():
-            # Draw the glyph with T2CharStringPen and get the charstring
-            t2_pen = T2CharStringPen(v.width, glyphSet=glyph_set)
-            # qu2cu_pen = Qu2CuPen(t2_pen, max_err=1.0, all_cubic=True, reverse_direction=True)
+
+def get_t2_charstrings(font: TTFont) -> (dict, list):
+    """
+    Get CFF charstrings using T2CharStringPen
+
+    :return: CFF charstrings.
+    """
+    charstrings = {}
+    glyph_set = font.getGlyphSet()
+    glyphs_with_errors = []
+
+    for k, v in glyph_set.items():
+        pathops_path = pathops.Path()
+        pathops_pen = pathops_path.getPen(glyphSet=glyph_set)
+        t2_pen = T2CharStringPen(v.width, glyphSet=glyph_set)
+        try:
+            glyph_set[k].draw(pathops_pen)
+            pathops_path.simplify()
+            pathops_path.draw(t2_pen)
+        except TypeError as e:
+            generic_warning_message(f"{k}: {e}")
+            glyphs_with_errors.append(k)
             glyph_set[k].draw(t2_pen)
-            charstring = t2_pen.getCharString()
-            charstrings[k] = charstring
 
-        return charstrings, []
+        charstring = t2_pen.getCharString()
+        charstrings[k] = charstring
+
+    return charstrings, []
 
 
 class TrueTypeToCFFRunner(object):
@@ -210,33 +168,84 @@ class TrueTypeToCFFRunner(object):
         converted_files_count = 0
         start_time = time.time()
 
-        for count, font in enumerate(self.fonts, start=1):
+        for count, source_font in enumerate(self.fonts, start=1):
             t = time.time()
 
             # try:
             print()
-            generic_info_message(f"Converting file {count} of {len(self.fonts)}: {font.reader.file.name}")
+            generic_info_message(f"Converting file {count} of {len(self.fonts)}: {source_font.reader.file.name}")
 
-            # Run the converter
-            ttf2otf_converter = TrueTypeToCFF(font=font)
-            ttf2otf_converter.options.tolerance = self.options.tolerance / 1000 * font["head"].unitsPerEm
-            ttf2otf_converter.options.subroutinize = self.options.subroutinize
-            ttf2otf_converter.options.new_upem = self.options.new_upem
-            ttf2otf_converter.options.remove_glyphs = self.options.remove_glyphs
-            ttf2otf_converter.options.recalc_timestamp = self.options.recalc_timestamp
-            ttf2otf_converter.options.charstrings_source = "qu2cu"
-            cff_font = ttf2otf_converter.run()
-
-            ext = ".otf" if font.flavor is None else "." + str(font.flavor)
+            ext = ".otf" if source_font.flavor is None else "." + str(source_font.flavor)
             # Suffix is necessary because without it source woff and woff2 files would be overwritten
-            suffix = "" if font.flavor is None else ".otf"
+            suffix = "" if source_font.flavor is None else ".otf"
             output_file = makeOutputFileName(
-                font.reader.file.name,
+                source_font.reader.file.name,
                 suffix=suffix,
                 extension=ext,
                 outputDir=self.options.output_dir,
                 overWrite=self.options.overwrite,
             )
+
+            source_font.recalcTimestamp = self.options.recalc_timestamp
+
+            # Prepare the font for conversion
+            decomponentize(font=source_font)
+            if self.options.new_upem is not None:
+                scale_upem(source_font, new_upem=self.options.new_upem)
+            if self.options.remove_glyphs:
+                remove_unneeded_glyphs(source_font)
+
+            tolerance = self.options.tolerance / 1000 * source_font["head"].unitsPerEm
+
+            # Run the converter
+            ttf2otf_converter = TrueTypeToCFF(font=source_font)
+            charstrings, glyphs_with_errors = get_qu2cu_charstrings(
+                font=source_font, tolerance=tolerance
+            )
+
+            if len(glyphs_with_errors) > 0:
+
+                generic_warning_message(f"The following glyphs must be fixed: {', '.join(glyphs_with_errors)}")
+
+                temp_source_file = makeOutputFileName(output_file, suffix="_tmp", extension=".ttf", overWrite=True)
+                source_font.save(temp_source_file)
+
+                temp_cff_file = makeOutputFileName(output_file, suffix="_tmp", extension=".cff", overWrite=True)
+                run_shell_command(
+                    args=["tx", "-cff", "-n", "+b", "+S", temp_source_file, temp_cff_file],
+                    suppress_output=True
+                )
+
+                ttf2otf_converter_temp = TrueTypeToCFF(font=source_font)
+                temp_otf_font = ttf2otf_converter_temp.run(charstrings)
+                temp_otf_file = makeOutputFileName(output_file, suffix="_tmp", extension=".otf", overWrite=True)
+                temp_otf_font.save(temp_otf_file)
+
+                run_shell_command(args=["sfntedit", "-a", f"CFF={temp_cff_file}", temp_otf_file])
+
+                temp_otf_font_1 = TTFont(temp_otf_file)
+                temp_charstrings, glyphs_with_errors_2 = get_t2_charstrings(temp_otf_font_1)
+
+                os.remove(temp_source_file)
+                os.remove(temp_otf_file)
+                os.remove(temp_cff_file)
+
+                for g in glyphs_with_errors:
+                    charstrings[g] = temp_charstrings[g]
+
+                if len(glyphs_with_errors_2) > 0:
+                    generic_error_message(glyphs_with_errors_2)
+
+            cff_font = ttf2otf_converter.run(charstrings=charstrings)
+
+            if self.options.subroutinize:
+                # cffsubr doesn't work with woff/woff2 fonts, we need to temporary set flavor to None
+                flavor = cff_font.flavor
+                if flavor is not None:
+                    cff_font.flavor = None
+                subroutinize(cff_font)
+                cff_font.flavor = flavor
+
             cff_font.save(output_file)
 
             generic_info_message(f"Elapsed time: {round(time.time() - t, 3)} seconds")
@@ -324,6 +333,21 @@ class CFFToTrueType(object):
             glyph.draw(cu2quPen)
             quadGlyphs[gname] = ttPen.glyph()
         return quadGlyphs
+
+
+def run_shell_command(args, suppress_output=False):
+    """
+    Runs a shell command.
+    Returns True if the command was successful, and False otherwise.
+    """
+    sup = subprocess.DEVNULL if suppress_output else None
+
+    try:
+        subprocess.check_call(args, stderr=sup, stdout=sup)
+        return True
+    except (subprocess.CalledProcessError, OSError) as err:
+        print(err)
+        return False
 
 
 def decomponentize(font: TTFont) -> None:
