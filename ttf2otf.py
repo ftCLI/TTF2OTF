@@ -19,7 +19,6 @@ from fontTools.ttLib.ttFont import TTFont, TTLibError
 class TrueTypeToCFFOptions(object):
     def __init__(self):
         self.tolerance: float = 1.0
-        self.charstrings_source = "qu2cu"
         self.subroutinize = True
         self.remove_glyphs = True
         self.new_upem = None
