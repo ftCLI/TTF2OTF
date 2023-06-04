@@ -1,7 +1,6 @@
 import os
 import subprocess
 import time
-from copy import deepcopy
 
 import click
 import pathops
@@ -33,7 +32,7 @@ class TrueTypeToCFFOptions(object):
 class TrueTypeToCFF(object):
     def __init__(self, font: TTFont):
         self.font = font
-        self.options = TrueTypeToCFFOptions()
+        # self.options = TrueTypeToCFFOptions()
 
     def run(self, charstrings: dict) -> TTFont:
 
@@ -101,23 +100,21 @@ def get_qu2cu_charstrings(font: TTFont, tolerance: float = 1.0) -> (dict, list):
     glyphs_with_errors = []
 
     for k, v in glyph_set.items():
-        # Correct contours direction and remove overlaps with pathops
+
         pathops_path = pathops.Path()
         pathops_pen = pathops_path.getPen(glyphSet=glyph_set)
         t2_pen = T2CharStringPen(v.width, glyphSet=glyph_set)
         qu2cu_pen = Qu2CuPen(t2_pen, max_err=tolerance, all_cubic=True, reverse_direction=False)
+
         try:
             glyph_set[k].draw(pathops_pen)
             pathops_path.simplify()
             pathops_path.draw(qu2cu_pen)
 
-        except TypeError as e:
-            # generic_warning_message(f"{k}: {e}")
+        except TypeError:
             glyphs_with_errors.append(k)
-            pass
 
-        except NotImplementedError as e:
-            # generic_warning_message(f"{k}: {e}")
+        except NotImplementedError:
             glyphs_with_errors.append(k)
             qu2cu_pen.all_cubic = False
             glyph_set[k].draw(qu2cu_pen)
@@ -171,89 +168,96 @@ class TrueTypeToCFFRunner(object):
         for count, source_font in enumerate(self.fonts, start=1):
             t = time.time()
 
-            # try:
-            print()
-            generic_info_message(f"Converting file {count} of {len(self.fonts)}: {source_font.reader.file.name}")
+            try:
+                print()
+                generic_info_message(f"Converting file {count} of {len(self.fonts)}: {source_font.reader.file.name}")
 
-            ext = ".otf" if source_font.flavor is None else "." + str(source_font.flavor)
-            # Suffix is necessary because without it source woff and woff2 files would be overwritten
-            suffix = "" if source_font.flavor is None else ".otf"
-            output_file = makeOutputFileName(
-                source_font.reader.file.name,
-                suffix=suffix,
-                extension=ext,
-                outputDir=self.options.output_dir,
-                overWrite=self.options.overwrite,
-            )
-
-            source_font.recalcTimestamp = self.options.recalc_timestamp
-
-            # Prepare the font for conversion
-            decomponentize(font=source_font)
-            if self.options.new_upem is not None:
-                scale_upem(source_font, new_upem=self.options.new_upem)
-            if self.options.remove_glyphs:
-                remove_unneeded_glyphs(source_font)
-
-            tolerance = self.options.tolerance / 1000 * source_font["head"].unitsPerEm
-
-            # Run the converter
-            ttf2otf_converter = TrueTypeToCFF(font=source_font)
-            charstrings, glyphs_with_errors = get_qu2cu_charstrings(
-                font=source_font, tolerance=tolerance
-            )
-
-            if len(glyphs_with_errors) > 0:
-
-                generic_warning_message(f"The following glyphs must be fixed: {', '.join(glyphs_with_errors)}")
-
-                temp_source_file = makeOutputFileName(output_file, suffix="_tmp", extension=".ttf", overWrite=True)
-                source_font.save(temp_source_file)
-
-                temp_cff_file = makeOutputFileName(output_file, suffix="_tmp", extension=".cff", overWrite=True)
-                run_shell_command(
-                    args=["tx", "-cff", "-n", "+b", "+S", temp_source_file, temp_cff_file],
-                    suppress_output=True
+                ext = ".otf" if source_font.flavor is None else "." + str(source_font.flavor)
+                # Suffix is necessary because without it source woff and woff2 files would be overwritten
+                suffix = "" if source_font.flavor is None else ".otf"
+                output_file = makeOutputFileName(
+                    source_font.reader.file.name,
+                    suffix=suffix,
+                    extension=ext,
+                    outputDir=self.options.output_dir,
+                    overWrite=self.options.overwrite,
                 )
 
-                ttf2otf_converter_temp = TrueTypeToCFF(font=source_font)
-                temp_otf_font = ttf2otf_converter_temp.run(charstrings)
-                temp_otf_file = makeOutputFileName(output_file, suffix="_tmp", extension=".otf", overWrite=True)
-                temp_otf_font.save(temp_otf_file)
+                source_font.recalcTimestamp = self.options.recalc_timestamp
 
-                run_shell_command(args=["sfntedit", "-a", f"CFF={temp_cff_file}", temp_otf_file])
+                # Prepare the font for conversion
+                decomponentize(font=source_font)
+                if self.options.new_upem is not None:
+                    scale_upem(source_font, new_upem=self.options.new_upem)
+                if self.options.remove_glyphs:
+                    remove_unneeded_glyphs(source_font)
 
-                temp_otf_font_1 = TTFont(temp_otf_file)
-                temp_charstrings, glyphs_with_errors_2 = get_t2_charstrings(temp_otf_font_1)
+                tolerance = self.options.tolerance / 1000 * source_font["head"].unitsPerEm
 
-                os.remove(temp_source_file)
-                os.remove(temp_otf_file)
-                os.remove(temp_cff_file)
+                # Run the converter
+                ttf2otf_converter = TrueTypeToCFF(font=source_font)
+                charstrings, glyphs_with_errors = get_qu2cu_charstrings(font=source_font, tolerance=tolerance)
 
-                for g in glyphs_with_errors:
-                    charstrings[g] = temp_charstrings[g]
+                # Fix charstrings in case of errors
+                if len(glyphs_with_errors) > 0:
+                    generic_warning_message(f"The following glyphs must be fixed: {', '.join(glyphs_with_errors)}")
 
-                if len(glyphs_with_errors_2) > 0:
-                    generic_error_message(glyphs_with_errors_2)
+                    # Save the source font to a temp source file in case scale_upm and/or remove_unneeded_glyphs are True
+                    temp_source_file = makeOutputFileName(output_file, suffix="_tmp", extension=".ttf", overWrite=True)
+                    source_font.save(temp_source_file)
 
-            cff_font = ttf2otf_converter.run(charstrings=charstrings)
+                    # Dump the temp source file as .cff
+                    temp_cff_file = makeOutputFileName(output_file, suffix="_tmp", extension=".cff", overWrite=True)
+                    run_shell_command(
+                        args=["tx", "-cff", "-n", "+b", "+S", temp_source_file, temp_cff_file],
+                        suppress_output=True
+                    )
 
-            if self.options.subroutinize:
-                # cffsubr doesn't work with woff/woff2 fonts, we need to temporary set flavor to None
-                flavor = cff_font.flavor
-                if flavor is not None:
-                    cff_font.flavor = None
-                subroutinize(cff_font)
-                cff_font.flavor = flavor
+                    # Build a temporary otf font
+                    ttf2otf_converter_temp = TrueTypeToCFF(font=source_font)
+                    temp_otf_font = ttf2otf_converter_temp.run(charstrings)
+                    temp_otf_file = makeOutputFileName(output_file, suffix="_tmp", extension=".otf", overWrite=True)
+                    temp_otf_font.save(temp_otf_file)
 
-            cff_font.save(output_file)
+                    # Merge the CFF dumped before into the temp otf font
+                    run_shell_command(args=["sfntedit", "-a", f"CFF={temp_cff_file}", temp_otf_file])
 
-            generic_info_message(f"Elapsed time: {round(time.time() - t, 3)} seconds")
-            file_saved_message(output_file)
-            converted_files_count += 1
+                    # Get the charstrings from the temp otf font
+                    temp_otf_font_1 = TTFont(temp_otf_file)
+                    temp_charstrings, glyphs_with_errors_2 = get_t2_charstrings(temp_otf_font_1)
 
-            # except Exception as e:
-            #     generic_error_message(e)
+                    # Remove the temporary files
+                    os.remove(temp_source_file)
+                    os.remove(temp_otf_file)
+                    os.remove(temp_cff_file)
+
+                    # Replace the charstrings with errors with the ones from the temporary otf font
+                    for g in glyphs_with_errors:
+                        charstrings[g] = temp_charstrings[g]
+
+                    if len(glyphs_with_errors_2) > 0:
+                        generic_error_message(f"The following glyphs couldn't be fixed: {', '.join(glyphs_with_errors_2)}")
+                    else:
+                        generic_info_message("All glyphs have been fixed")
+
+                cff_font = ttf2otf_converter.run(charstrings=charstrings)
+
+                if self.options.subroutinize:
+                    # cffsubr doesn't work with woff/woff2 fonts, we need to temporary set flavor to None
+                    flavor = cff_font.flavor
+                    if flavor is not None:
+                        cff_font.flavor = None
+                    subroutinize(cff_font)
+                    cff_font.flavor = flavor
+
+                cff_font.save(output_file)
+
+                generic_info_message(f"Elapsed time: {round(time.time() - t, 3)} seconds")
+                file_saved_message(output_file)
+                converted_files_count += 1
+
+            except Exception as e:
+                generic_error_message(e)
 
         print()
         generic_info_message(f"Total files     : {len(self.fonts)}")
