@@ -83,6 +83,7 @@ class TrueTypeToCFFRunner(object):
                     overWrite=self.options.overwrite,
                 )
 
+                tolerance = self.options.tolerance / 1000 * source_font["head"].unitsPerEm
                 source_font.recalcTimestamp = self.options.recalc_timestamp
 
                 # Prepare the font for conversion
@@ -92,10 +93,6 @@ class TrueTypeToCFFRunner(object):
                 if self.options.remove_glyphs:
                     remove_unneeded_glyphs(source_font)
 
-                tolerance = self.options.tolerance / 1000 * source_font["head"].unitsPerEm
-
-                # Run the converter
-                ttf2otf_converter = TrueTypeToCFF(font=source_font)
                 charstrings, glyphs_with_errors = get_qu2cu_charstrings(font=source_font, tolerance=tolerance)
 
                 # Fix charstrings in case of errors
@@ -144,7 +141,7 @@ class TrueTypeToCFFRunner(object):
                     else:
                         generic_info_message("All glyphs have been fixed")
 
-                cff_font = ttf2otf_converter.run(charstrings=charstrings)
+                cff_font = build_cff_font(font=source_font, charstrings=charstrings)
 
                 if self.options.subroutinize:
                     # cffsubr doesn't work with woff/woff2 fonts, we need to temporary set flavor to None
@@ -167,6 +164,29 @@ class TrueTypeToCFFRunner(object):
         generic_info_message(f"Total files     : {len(self.fonts)}")
         generic_info_message(f"Converted files : {converted_files_count}")
         generic_info_message(f"Elapsed time    : {round(time.time() - start_time, 3)} seconds")
+
+
+def build_cff_font(font: TTFont, charstrings: dict) -> TTFont:
+    cff_font_info = get_cff_font_info(font)
+    post_values = get_post_values(font)
+
+    fb = FontBuilder(font=font)
+    fb.isTTF = False
+    for table in ["glyf", "cvt ", "loca", "fpgm", "prep", "gasp", "LTSH", "hdmx"]:
+        if table in fb.font:
+            del fb.font[table]
+    fb.setupCFF(
+        psName=font["name"].getDebugName(6),
+        charStringsDict=charstrings,
+        fontInfo=cff_font_info,
+        privateDict={},
+    )
+
+    fb.setupDummyDSIG()
+    fb.setupMaxp()
+    fb.setupPost(**post_values)
+
+    return fb.font
 
 
 def get_qu2cu_charstrings(font: TTFont, tolerance: float = 1.0) -> (dict, list):
