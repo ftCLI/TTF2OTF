@@ -94,66 +94,6 @@ class TrueTypeToCFF(object):
         return post_info
 
 
-def get_qu2cu_charstrings(font: TTFont, tolerance: float = 1.0) -> (dict, list):
-    charstrings = {}
-    glyph_set = font.getGlyphSet()
-    glyphs_with_errors = []
-
-    for k, v in glyph_set.items():
-
-        pathops_path = pathops.Path()
-        pathops_pen = pathops_path.getPen(glyphSet=glyph_set)
-        t2_pen = T2CharStringPen(v.width, glyphSet=glyph_set)
-        qu2cu_pen = Qu2CuPen(t2_pen, max_err=tolerance, all_cubic=True, reverse_direction=False)
-
-        try:
-            glyph_set[k].draw(pathops_pen)
-            pathops_path.simplify()
-            pathops_path.draw(qu2cu_pen)
-
-        except TypeError:
-            glyphs_with_errors.append(k)
-
-        except NotImplementedError:
-            glyphs_with_errors.append(k)
-            qu2cu_pen.all_cubic = False
-            glyph_set[k].draw(qu2cu_pen)
-
-        charstring = t2_pen.getCharString()
-        charstrings[k] = charstring
-
-    return charstrings, glyphs_with_errors
-
-
-def get_t2_charstrings(font: TTFont) -> (dict, list):
-    """
-    Get CFF charstrings using T2CharStringPen
-
-    :return: CFF charstrings.
-    """
-    charstrings = {}
-    glyph_set = font.getGlyphSet()
-    glyphs_with_errors = []
-
-    for k, v in glyph_set.items():
-        pathops_path = pathops.Path()
-        pathops_pen = pathops_path.getPen(glyphSet=glyph_set)
-        t2_pen = T2CharStringPen(v.width, glyphSet=glyph_set)
-        try:
-            glyph_set[k].draw(pathops_pen)
-            pathops_path.simplify()
-            pathops_path.draw(t2_pen)
-        except TypeError as e:
-            generic_warning_message(f"{k}: {e}")
-            glyphs_with_errors.append(k)
-            glyph_set[k].draw(t2_pen)
-
-        charstring = t2_pen.getCharString()
-        charstrings[k] = charstring
-
-    return charstrings, []
-
-
 class TrueTypeToCFFRunner(object):
     def __init__(self, fonts: list[TTFont]):
         super().__init__()
@@ -337,6 +277,66 @@ class CFFToTrueType(object):
             glyph.draw(cu2quPen)
             quadGlyphs[gname] = ttPen.glyph()
         return quadGlyphs
+
+
+def get_qu2cu_charstrings(font: TTFont, tolerance: float = 1.0) -> (dict, list):
+    charstrings = {}
+    glyph_set = font.getGlyphSet()
+    glyphs_with_errors = []
+
+    for k, v in glyph_set.items():
+
+        pathops_path = pathops.Path()
+        pathops_pen = pathops_path.getPen(glyphSet=glyph_set)
+        t2_pen = T2CharStringPen(v.width, glyphSet=glyph_set)
+        qu2cu_pen = Qu2CuPen(t2_pen, max_err=tolerance, all_cubic=True, reverse_direction=False)
+
+        try:
+            glyph_set[k].draw(pathops_pen)
+            pathops_path.simplify()
+            pathops_path.draw(qu2cu_pen)
+
+        except TypeError:
+            glyphs_with_errors.append(k)
+
+        except NotImplementedError:
+            glyphs_with_errors.append(k)
+            qu2cu_pen.all_cubic = False
+            glyph_set[k].draw(qu2cu_pen)
+
+        charstring = t2_pen.getCharString()
+        charstrings[k] = charstring
+
+    return charstrings, glyphs_with_errors
+
+
+def get_t2_charstrings(font: TTFont) -> (dict, list):
+    """
+    Get CFF charstrings using T2CharStringPen
+
+    :return: CFF charstrings.
+    """
+    charstrings = {}
+    glyph_set = font.getGlyphSet()
+    glyphs_with_errors = []
+
+    for k, v in glyph_set.items():
+        pathops_path = pathops.Path()
+        pathops_pen = pathops_path.getPen(glyphSet=glyph_set)
+        t2_pen = T2CharStringPen(v.width, glyphSet=glyph_set)
+        try:
+            glyph_set[k].draw(pathops_pen)
+            pathops_path.simplify()
+            pathops_path.draw(t2_pen)
+        except TypeError as e:
+            generic_warning_message(f"{k}: {e}")
+            glyphs_with_errors.append(k)
+            glyph_set[k].draw(t2_pen)
+
+        charstring = t2_pen.getCharString()
+        charstrings[k] = charstring
+
+    return charstrings, []
 
 
 def run_shell_command(args, suppress_output=False):
