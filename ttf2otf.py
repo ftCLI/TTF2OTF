@@ -60,7 +60,6 @@ class TrueTypeToCFFRunner(object):
         super().__init__()
         self.fonts = fonts
         self.options = TrueTypeToCFFOptions()
-        self.is_killed = False
 
     def run(self) -> None:
         converted_files_count = 0
@@ -117,6 +116,7 @@ class TrueTypeToCFFRunner(object):
                     # Build a temporary otf font
                     ttf2otf_converter_temp = TrueTypeToCFF(font=source_font)
                     temp_otf_font = ttf2otf_converter_temp.run(charstrings)
+
                     temp_otf_file = makeOutputFileName(output_file, suffix="_tmp", extension=".otf", overWrite=True)
                     temp_otf_font.save(temp_otf_file)
 
@@ -136,6 +136,7 @@ class TrueTypeToCFFRunner(object):
                     for g in glyphs_with_errors:
                         charstrings[g] = temp_charstrings[g]
 
+                    # Display an error message if not all glyphs have been fixed
                     if len(glyphs_with_errors_2) > 0:
                         generic_error_message(
                             f"The following glyphs couldn't be fixed: {', '.join(glyphs_with_errors_2)}"
