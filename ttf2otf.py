@@ -110,9 +110,7 @@ class TrueTypeToCFFRunner(object):
                     )
 
                     # Build a temporary otf font
-                    ttf2otf_converter_temp = TrueTypeToCFF(font=source_font)
-                    temp_otf_font = ttf2otf_converter_temp.run(charstrings)
-
+                    temp_otf_font = build_cff_font(source_font, charstrings)
                     temp_otf_file = makeOutputFileName(output_file, suffix="_tmp", extension=".otf", overWrite=True)
                     temp_otf_font.save(temp_otf_file)
 
