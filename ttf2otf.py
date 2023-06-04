@@ -27,33 +27,6 @@ class TrueTypeToCFFOptions(object):
         self.overwrite = True
 
 
-class TrueTypeToCFF(object):
-    def __init__(self, font: TTFont):
-        self.font = font
-
-    def run(self, charstrings: dict) -> TTFont:
-        cff_font_info = get_cff_font_info(self.font)
-        post_values = get_post_values(self.font)
-
-        fb = FontBuilder(font=self.font)
-        fb.isTTF = False
-        for table in ["glyf", "cvt ", "loca", "fpgm", "prep", "gasp", "LTSH", "hdmx"]:
-            if table in fb.font:
-                del fb.font[table]
-        fb.setupCFF(
-            psName=self.font["name"].getDebugName(6),
-            charStringsDict=charstrings,
-            fontInfo=cff_font_info,
-            privateDict={},
-        )
-
-        fb.setupDummyDSIG()
-        fb.setupMaxp()
-        fb.setupPost(**post_values)
-
-        return fb.font
-
-
 class TrueTypeToCFFRunner(object):
     def __init__(self, fonts: list[TTFont]):
         super().__init__()
