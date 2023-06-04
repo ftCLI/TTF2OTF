@@ -7,14 +7,13 @@ import pathops
 from cffsubr import subroutinize
 from fontTools.fontBuilder import FontBuilder
 from fontTools.misc.cliTools import makeOutputFileName
-from fontTools.pens.cu2quPen import Cu2QuPen
 from fontTools.pens.qu2cuPen import Qu2CuPen
 from fontTools.pens.recordingPen import DecomposingRecordingPen
 from fontTools.pens.t2CharStringPen import T2CharStringPen
 from fontTools.pens.ttGlyphPen import TTGlyphPen
 from fontTools.subset import Subsetter
 from fontTools.ttLib.scaleUpem import scale_upem
-from fontTools.ttLib.ttFont import TTFont, TTLibError, newTable
+from fontTools.ttLib.ttFont import TTFont, TTLibError
 
 
 class TrueTypeToCFFOptions(object):
@@ -32,12 +31,10 @@ class TrueTypeToCFFOptions(object):
 class TrueTypeToCFF(object):
     def __init__(self, font: TTFont):
         self.font = font
-        # self.options = TrueTypeToCFFOptions()
 
     def run(self, charstrings: dict) -> TTFont:
-
-        cff_font_info = self.get_cff_font_info()
-        post_values = self.get_post_values()
+        cff_font_info = get_cff_font_info(self.font)
+        post_values = get_post_values(self.font)
 
         fb = FontBuilder(font=self.font)
         fb.isTTF = False
@@ -56,42 +53,6 @@ class TrueTypeToCFF(object):
         fb.setupPost(**post_values)
 
         return fb.font
-
-    def get_cff_font_info(self) -> dict:
-        """
-        Setup CFF topDict
-
-        :return: A dictionary of the font info.
-        """
-
-        font_revision = str(round(self.font["head"].fontRevision, 3)).split(".")
-        major_version = str(font_revision[0])
-        minor_version = str(font_revision[1]).ljust(3, "0")
-
-        cff_font_info = dict(
-            version=".".join([major_version, str(int(minor_version))]),
-            FullName=self.font["name"].getBestFullName(),
-            FamilyName=self.font["name"].getBestFamilyName(),
-            ItalicAngle=self.font["post"].italicAngle,
-            UnderlinePosition=self.font["post"].underlinePosition,
-            UnderlineThickness=self.font["post"].underlineThickness,
-            isFixedPitch=False if self.font["post"].isFixedPitch == 0 else True,
-        )
-
-        return cff_font_info
-
-    def get_post_values(self) -> dict:
-        post_info = dict(
-            italicAngle=round(self.font["post"].italicAngle),
-            underlinePosition=self.font["post"].underlinePosition,
-            underlineThickness=self.font["post"].underlineThickness,
-            isFixedPitch=self.font["post"].isFixedPitch,
-            minMemType42=self.font["post"].minMemType42,
-            maxMemType42=self.font["post"].maxMemType42,
-            minMemType1=self.font["post"].minMemType1,
-            maxMemType1=self.font["post"].maxMemType1,
-        )
-        return post_info
 
 
 class TrueTypeToCFFRunner(object):
@@ -142,15 +103,15 @@ class TrueTypeToCFFRunner(object):
                 if len(glyphs_with_errors) > 0:
                     generic_warning_message(f"The following glyphs must be fixed: {', '.join(glyphs_with_errors)}")
 
-                    # Save the source font to a temp source file in case scale_upm and/or remove_unneeded_glyphs are True
+                    # Save the source font to a temp source file in case scale_upm and/or remove_unneeded_glyphs are
+                    # True
                     temp_source_file = makeOutputFileName(output_file, suffix="_tmp", extension=".ttf", overWrite=True)
                     source_font.save(temp_source_file)
 
                     # Dump the temp source file as .cff
                     temp_cff_file = makeOutputFileName(output_file, suffix="_tmp", extension=".cff", overWrite=True)
                     run_shell_command(
-                        args=["tx", "-cff", "-n", "+b", "+S", temp_source_file, temp_cff_file],
-                        suppress_output=True
+                        args=["tx", "-cff", "-n", "+b", "+S", temp_source_file, temp_cff_file], suppress_output=True
                     )
 
                     # Build a temporary otf font
@@ -176,7 +137,9 @@ class TrueTypeToCFFRunner(object):
                         charstrings[g] = temp_charstrings[g]
 
                     if len(glyphs_with_errors_2) > 0:
-                        generic_error_message(f"The following glyphs couldn't be fixed: {', '.join(glyphs_with_errors_2)}")
+                        generic_error_message(
+                            f"The following glyphs couldn't be fixed: {', '.join(glyphs_with_errors_2)}"
+                        )
                     else:
                         generic_info_message("All glyphs have been fixed")
 
@@ -205,87 +168,12 @@ class TrueTypeToCFFRunner(object):
         generic_info_message(f"Elapsed time    : {round(time.time() - start_time, 3)} seconds")
 
 
-class CFFToTrueTypeOptions(object):
-    def __init__(self):
-        super().__init__()
-        self.max_err = 1.0
-        self.post_format = 2.0
-        self.reverse_direction = True
-
-
-class CFFToTrueType(object):
-    def __init__(self, font: TTFont):
-        self.font = font
-        self.options = CFFToTrueTypeOptions()
-
-    def run(self):
-        if self.font.sfntVersion != "OTTO":
-            raise TTLibError("Not a OpenType font (bad sfntVersion)")
-        assert "CFF " in self.font
-
-        glyphOrder = self.font.getGlyphOrder()
-
-        self.font["loca"] = newTable("loca")
-        self.font["glyf"] = glyf = newTable("glyf")
-        glyf.glyphOrder = glyphOrder
-        glyf.glyphs = self.glyphs_to_quadratic(glyphs=self.font.getGlyphSet())
-        del self.font["CFF "]
-        if "VORG" in self.font:
-            del self.font["VORG"]
-        glyf.compile(self.font)
-        self.update_hmtx(glyf)
-
-        self.font["maxp"] = maxp = newTable("maxp")
-        maxp.tableVersion = 0x00010000
-        maxp.maxZones = 1
-        maxp.maxTwilightPoints = 0
-        maxp.maxStorage = 0
-        maxp.maxFunctionDefs = 0
-        maxp.maxInstructionDefs = 0
-        maxp.maxStackElements = 0
-        maxp.maxSizeOfInstructions = 0
-        maxp.maxComponentElements = max(
-            len(g.components if hasattr(g, "components") else []) for g in glyf.glyphs.values()
-        )
-        maxp.compile(self.font)
-
-        post = self.font["post"]
-        post.formatType = self.options.post_format
-        post.extraNames = []
-        post.mapping = {}
-        post.glyphOrder = glyphOrder
-        try:
-            post.compile(self.font)
-        except OverflowError:
-            post.formatType = 3
-
-        self.font.sfntVersion = "\000\001\000\000"
-        return self.font
-
-    def update_hmtx(self, glyf):
-        hmtx = self.font["hmtx"]
-        for glyphName, glyph in glyf.glyphs.items():
-            if hasattr(glyph, "xMin"):
-                hmtx[glyphName] = (hmtx[glyphName][0], glyph.xMin)
-
-    def glyphs_to_quadratic(self, glyphs):
-        quadGlyphs = {}
-        for gname in glyphs.keys():
-            glyph = glyphs[gname]
-            ttPen = TTGlyphPen(glyphs)
-            cu2quPen = Cu2QuPen(ttPen, max_err=self.options.max_err, reverse_direction=self.options.reverse_direction)
-            glyph.draw(cu2quPen)
-            quadGlyphs[gname] = ttPen.glyph()
-        return quadGlyphs
-
-
 def get_qu2cu_charstrings(font: TTFont, tolerance: float = 1.0) -> (dict, list):
     charstrings = {}
     glyph_set = font.getGlyphSet()
     glyphs_with_errors = []
 
     for k, v in glyph_set.items():
-
         pathops_path = pathops.Path()
         pathops_pen = pathops_path.getPen(glyphSet=glyph_set)
         t2_pen = T2CharStringPen(v.width, glyphSet=glyph_set)
@@ -337,6 +225,44 @@ def get_t2_charstrings(font: TTFont) -> (dict, list):
         charstrings[k] = charstring
 
     return charstrings, []
+
+
+def get_cff_font_info(font: TTFont) -> dict:
+    """
+    Setup CFF topDict
+
+    :return: A dictionary of the font info.
+    """
+
+    font_revision = str(round(font["head"].fontRevision, 3)).split(".")
+    major_version = str(font_revision[0])
+    minor_version = str(font_revision[1]).ljust(3, "0")
+
+    cff_font_info = dict(
+        version=".".join([major_version, str(int(minor_version))]),
+        FullName=font["name"].getBestFullName(),
+        FamilyName=font["name"].getBestFamilyName(),
+        ItalicAngle=font["post"].italicAngle,
+        UnderlinePosition=font["post"].underlinePosition,
+        UnderlineThickness=font["post"].underlineThickness,
+        isFixedPitch=False if font["post"].isFixedPitch == 0 else True,
+    )
+
+    return cff_font_info
+
+
+def get_post_values(font: TTFont) -> dict:
+    post_info = dict(
+        italicAngle=round(font["post"].italicAngle),
+        underlinePosition=font["post"].underlinePosition,
+        underlineThickness=font["post"].underlineThickness,
+        isFixedPitch=font["post"].isFixedPitch,
+        minMemType42=font["post"].minMemType42,
+        maxMemType42=font["post"].maxMemType42,
+        minMemType1=font["post"].minMemType1,
+        maxMemType1=font["post"].maxMemType1,
+    )
+    return post_info
 
 
 def run_shell_command(args, suppress_output=False):
@@ -537,14 +463,14 @@ def generic_warning_message(info_message, nl=True):
     """,
 )
 def cli(
-        input_path,
-        tolerance=1,
-        new_upem=None,
-        remove_glyphs=False,
-        apply_subroutines=True,
-        outputDir=None,
-        recalcTimestamp=False,
-        overWrite=True,
+    input_path,
+    tolerance=1,
+    new_upem=None,
+    remove_glyphs=False,
+    apply_subroutines=True,
+    outputDir=None,
+    recalcTimestamp=False,
+    overWrite=True,
 ):
     """
     Converts TTF fonts (or TrueType flavored woff/woff2 web fonts) to OTF fonts (or CFF flavored woff/woff2 web fonts).
