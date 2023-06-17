@@ -65,7 +65,7 @@ class TrueTypeToCFFRunner(object):
                 if self.options.remove_glyphs:
                     remove_unneeded_glyphs(source_font)
 
-                charstrings, glyphs_with_errors = get_qu2cu_charstrings(font=source_font, tolerance=tolerance)
+                charstrings, glyphs_with_errors = get_qu2cu_charstrings_without_pathops(font=source_font, tolerance=tolerance)
 
                 # Fix charstrings in case of errors
                 if len(glyphs_with_errors) > 0:
@@ -79,7 +79,7 @@ class TrueTypeToCFFRunner(object):
                     # Dump the temp source file as .cff
                     temp_cff_file = makeOutputFileName(output_file, suffix="_tmp", extension=".cff", overWrite=True)
                     run_shell_command(
-                        args=["tx", "-cff", "-n", "+b", "+S", temp_source_file, temp_cff_file], suppress_output=True
+                        args=["tx", "-cff", "-n", "+b", "-S", temp_source_file, temp_cff_file], suppress_output=True
                     )
 
                     # Build a temporary otf font
@@ -92,16 +92,14 @@ class TrueTypeToCFFRunner(object):
 
                     # Get the charstrings from the temp otf font
                     temp_otf_font_1 = TTFont(temp_otf_file)
-                    temp_charstrings, glyphs_with_errors_2 = get_t2_charstrings(temp_otf_font_1)
-
-                    # Remove the temporary files
-                    os.remove(temp_source_file)
-                    os.remove(temp_otf_file)
-                    os.remove(temp_cff_file)
+                    temp_charstrings, glyphs_with_errors_2 = get_t2_charstrings_with_pathops(temp_otf_font_1)
 
                     # Replace the charstrings with errors with the ones from the temporary otf font
                     for g in glyphs_with_errors:
-                        charstrings[g] = temp_charstrings[g]
+                        try:
+                            charstrings[g] = temp_charstrings[g]
+                        except KeyError:
+                            glyphs_with_errors_2.append(g)
 
                     # Display an error message if not all glyphs have been fixed
                     if len(glyphs_with_errors_2) > 0:
@@ -110,6 +108,11 @@ class TrueTypeToCFFRunner(object):
                         )
                     else:
                         generic_info_message("All glyphs have been fixed")
+
+                    # Remove the temporary files
+                    os.remove(temp_source_file)
+                    os.remove(temp_otf_file)
+                    os.remove(temp_cff_file)
 
                 cff_font = build_cff_font(font=source_font, charstrings=charstrings)
 
@@ -159,6 +162,25 @@ def build_cff_font(font: TTFont, charstrings: dict) -> TTFont:
     return fb.font
 
 
+def get_qu2cu_charstrings_without_pathops(font: TTFont, tolerance: float = 1.0):
+    charstrings = {}
+    glyphs_with_errors = []
+    glyph_set = font.getGlyphSet()
+
+    for k, v in glyph_set.items():
+        try:
+            t2_pen = T2CharStringPen(v.width, glyphSet=glyph_set)
+            qu2cu_pen = Qu2CuPen(t2_pen, max_err=tolerance, all_cubic=True, reverse_direction=True)
+            glyph_set[k].draw(qu2cu_pen)
+            charstring = t2_pen.getCharString()
+            charstrings[k] = charstring
+        except Exception as e:
+            glyphs_with_errors.append(k)
+            generic_warning_message(f"{k}: {e}")
+
+    return charstrings, glyphs_with_errors
+
+
 def get_qu2cu_charstrings(font: TTFont, tolerance: float = 1.0) -> (dict, list):
     charstrings = {}
     glyph_set = font.getGlyphSet()
@@ -175,10 +197,12 @@ def get_qu2cu_charstrings(font: TTFont, tolerance: float = 1.0) -> (dict, list):
             pathops_path.simplify()
             pathops_path.draw(qu2cu_pen)
 
-        except TypeError:
+        except TypeError as e:
+            generic_warning_message(f"{e} [{k}]")
             glyphs_with_errors.append(k)
 
-        except NotImplementedError:
+        except NotImplementedError as e:
+            generic_warning_message(f"{e}: [{k}]")
             glyphs_with_errors.append(k)
             qu2cu_pen.all_cubic = False
             glyph_set[k].draw(qu2cu_pen)
@@ -189,9 +213,22 @@ def get_qu2cu_charstrings(font: TTFont, tolerance: float = 1.0) -> (dict, list):
     return charstrings, glyphs_with_errors
 
 
-def get_t2_charstrings(font: TTFont) -> (dict, list):
+def get_t2_charstrings(font: TTFont) -> dict:
     """
-    Get CFF charstrings using T2CharStringPen
+    Get CFF charstrings without pathops
+    """
+    charstrings = {}
+    glyph_set = font.getGlyphSet()
+    for k, v in glyph_set.items():
+        t2_pen = T2CharStringPen(v.width, glyphSet=glyph_set)
+        glyph_set[k].draw(t2_pen)
+        charstrings[k] = t2_pen.getCharString()
+    return charstrings
+
+
+def get_t2_charstrings_with_pathops(font: TTFont) -> (dict, list):
+    """
+    Get CFF charstrings using T2CharStringPen and pathops
 
     :return: CFF charstrings.
     """
@@ -207,15 +244,14 @@ def get_t2_charstrings(font: TTFont) -> (dict, list):
             glyph_set[k].draw(pathops_pen)
             pathops_path.simplify()
             pathops_path.draw(t2_pen)
-        except TypeError as e:
-            generic_warning_message(f"{k}: {e}")
+        except TypeError:
             glyphs_with_errors.append(k)
             glyph_set[k].draw(t2_pen)
 
         charstring = t2_pen.getCharString()
         charstrings[k] = charstring
 
-    return charstrings, []
+    return charstrings, glyphs_with_errors
 
 
 def get_cff_font_info(font: TTFont) -> dict:
@@ -454,14 +490,14 @@ def generic_warning_message(info_message, nl=True):
     """,
 )
 def cli(
-    input_path,
-    tolerance=1,
-    new_upem=None,
-    remove_glyphs=False,
-    apply_subroutines=True,
-    outputDir=None,
-    recalcTimestamp=False,
-    overWrite=True,
+        input_path,
+        tolerance=1,
+        new_upem=None,
+        remove_glyphs=False,
+        apply_subroutines=True,
+        outputDir=None,
+        recalcTimestamp=False,
+        overWrite=True,
 ):
     """
     Converts TTF fonts (or TrueType flavored woff/woff2 web fonts) to OTF fonts (or CFF flavored woff/woff2 web fonts).
